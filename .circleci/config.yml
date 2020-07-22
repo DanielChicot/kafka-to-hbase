@@ -1,14 +1,14 @@
 version: 2.1
 
-orbs:
-  snyk: snyk/snyk@0.0.8
-
-executors:
-  docker-publisher:
-    environment:
-      IMAGE_NAME: dwpdigital/kafka-to-hbase
-    docker:
-      - image: circleci/buildpack-deps:stretch
+#orbs:
+#  snyk: snyk/snyk@0.0.8
+#
+#executors:
+#  docker-publisher:
+#    environment:
+#      IMAGE_NAME: dwpdigital/kafka-to-hbase
+#    docker:
+#      - image: circleci/buildpack-deps:stretch
 jobs:
   build:
     docker:
@@ -20,11 +20,16 @@ jobs:
           key: kafka-to-hbase-{{ checksum "build.gradle.kts" }}
 
       - run: |
+          LATEST_VERSION=$(curl --silent "https://api.github.com/repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          set -o pipefail
+          [  -z "$LATEST_VERSION" ] && LATEST_VERSION="0.0.0"
+          VERSION=$(echo $LATEST_VERSION | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
+          sed -i s/version=.*/version=$VERSION/ gradle.properties
           ./gradlew :unit build -x test
           gzip build/distributions/*.tar
           mkdir artifacts
           cp -v README.md artifacts
-          cp -v build/distributions/*.tar.gz artifacts/kafka2hbase.tar.gz
+          cp -v build/distributions/*.tar.gz artifacts/
 
       - save_cache:
           key: kafka-to-hbase-{{ checksum "build.gradle.kts" }}
@@ -34,89 +39,88 @@ jobs:
       - persist_to_workspace:
            root: artifacts
            paths:
-            - README.md
-            - kafka2hbase.tar.gz
+            - ./*.*
 
 
-  test:
-    docker:
-      - image: circleci/python:3.7.3
-    steps:
-      - checkout
-      - setup_remote_docker:
-          docker_layer_caching: false
-
-      - run:
-          name: "Run the integration test"
-          command: |
-            sudo pip3 install docker-compose
-            docker build --tag dwp-java:latest --file ./docker/java/Dockerfile .
-            docker build --tag dwp-python-preinstall:latest --file ./docker/python/Dockerfile .
-            docker-compose -f docker-compose.yaml up --build -d zookeeper kafka hbase kafka2hbase kafka2s3 aws-s3 integration-test
-            S3_READY_REGEX=^Ready\.$
-            while ! docker logs aws-s3 2> /dev/null | grep -q $S3_READY_REGEX; do
-                echo Waiting for aws-s3.
-                sleep 2
-            done
-            docker-compose -f docker-compose.yaml up --build s3-provision
-            docker-compose -f docker-compose.yaml run --name integration-test integration-test ./gradlew --no-daemon :integration -x test
-            docker cp integration-test:/kafka2hbase/build/test-results .
-      - store_test_results:
-          path: test-results
-      - store_artifacts:
-          path: test-results
-          destination: test-results
-
-  snyk-pr:
-    docker:
-      - image: circleci/openjdk:8-jdk
-    environment:
-      IMAGE_NAME: kafka-to-hbase
-    steps:
-      - checkout
-      # First snyk scan only looks for sev:high and will fail if found
-      - snyk/scan:
-          organization: dwp-dataworks
-          severity-threshold: high
-          target-file: build.gradle.kts
-          project: '${CIRCLE_PROJECT_REPONAME}/pr-kotlin'
-      - setup_remote_docker
-      - run:
-          command: 'docker build -t $IMAGE_NAME:latest .'
-          name: Build Docker image
-      # Second snyk scan examines Docker container for sev:high and will fail if found
-      - snyk/scan:
-          organization: dwp-dataworks
-          docker-image-name: '$IMAGE_NAME:latest'
-          severity-threshold: high
-          target-file: Dockerfile
-          monitor-on-build: false
-          project: '${CIRCLE_PROJECT_REPONAME}/pr-docker'
-
-  snyk-master:
-    docker:
-      - image: circleci/openjdk:8-jdk
-    environment:
-      IMAGE_NAME: kafka-to-hbase
-    steps:
-      - checkout
-      # First snyk scan only looks for sev:high and will fail if found
-      - snyk/scan:
-          organization: dwp-dataworks
-          severity-threshold: high
-          target-file: build.gradle.kts
-          project: '${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}-kotlin'
-      - setup_remote_docker
-      - run:
-          command: 'docker build -t $IMAGE_NAME:latest .'
-          name: Build Docker image
-      # Second snyk scan examines Docker container for sev:high and will fail if found
-      - snyk/scan:
-          organization: dwp-dataworks
-          docker-image-name: '$IMAGE_NAME:latest'
-          severity-threshold: high
-          target-file: Dockerfile
-          project: '${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}-docker'
+#  test:
+#    docker:
+#      - image: circleci/python:3.7.3
+#    steps:
+#      - checkout
+#      - setup_remote_docker:
+#          docker_layer_caching: false
+#
+#      - run:
+#          name: "Run the integration test"
+#          command: |
+#            sudo pip3 install docker-compose
+#            docker build --tag dwp-java:latest --file ./docker/java/Dockerfile .
+#            docker build --tag dwp-python-preinstall:latest --file ./docker/python/Dockerfile .
+#            docker-compose -f docker-compose.yaml up --build -d zookeeper kafka hbase kafka2hbase kafka2s3 aws-s3 integration-test
+#            S3_READY_REGEX=^Ready\.$
+#            while ! docker logs aws-s3 2> /dev/null | grep -q $S3_READY_REGEX; do
+#                echo Waiting for aws-s3.
+#                sleep 2
+#            done
+#            docker-compose -f docker-compose.yaml up --build s3-provision
+#            docker-compose -f docker-compose.yaml run --name integration-test integration-test ./gradlew --no-daemon :integration -x test
+#            docker cp integration-test:/kafka2hbase/build/test-results .
+#      - store_test_results:
+#          path: test-results
+#      - store_artifacts:
+#          path: test-results
+#          destination: test-results
+#
+#  snyk-pr:
+#    docker:
+#      - image: circleci/openjdk:8-jdk
+#    environment:
+#      IMAGE_NAME: kafka-to-hbase
+#    steps:
+#      - checkout
+#      # First snyk scan only looks for sev:high and will fail if found
+#      - snyk/scan:
+#          organization: dwp-dataworks
+#          severity-threshold: high
+#          target-file: build.gradle.kts
+#          project: '${CIRCLE_PROJECT_REPONAME}/pr-kotlin'
+#      - setup_remote_docker
+#      - run:
+#          command: 'docker build -t $IMAGE_NAME:latest .'
+#          name: Build Docker image
+#      # Second snyk scan examines Docker container for sev:high and will fail if found
+#      - snyk/scan:
+#          organization: dwp-dataworks
+#          docker-image-name: '$IMAGE_NAME:latest'
+#          severity-threshold: high
+#          target-file: Dockerfile
+#          monitor-on-build: false
+#          project: '${CIRCLE_PROJECT_REPONAME}/pr-docker'
+#
+#  snyk-master:
+#    docker:
+#      - image: circleci/openjdk:8-jdk
+#    environment:
+#      IMAGE_NAME: kafka-to-hbase
+#    steps:
+#      - checkout
+#      # First snyk scan only looks for sev:high and will fail if found
+#      - snyk/scan:
+#          organization: dwp-dataworks
+#          severity-threshold: high
+#          target-file: build.gradle.kts
+#          project: '${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}-kotlin'
+#      - setup_remote_docker
+#      - run:
+#          command: 'docker build -t $IMAGE_NAME:latest .'
+#          name: Build Docker image
+#      # Second snyk scan examines Docker container for sev:high and will fail if found
+#      - snyk/scan:
+#          organization: dwp-dataworks
+#          docker-image-name: '$IMAGE_NAME:latest'
+#          severity-threshold: high
+#          target-file: Dockerfile
+#          project: '${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}-docker'
 
 
   publish-github-release:
@@ -134,7 +138,6 @@ jobs:
             set -o pipefail
             [  -z "$LATEST_VERSION" ] && LATEST_VERSION="0.0.0"
             VERSION=$(echo $LATEST_VERSION | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
-            mv artifacts/kafka2hbase.tar.gz artifacts/kafka2hbase-${VERSION}.tar.gz
             ghr -t ${GITHUB_TOKEN} -u ${CIRCLE_PROJECT_USERNAME} -r ${CIRCLE_PROJECT_REPONAME} -c ${CIRCLE_SHA1} -delete ${VERSION} ./artifacts/
 
   docker-build:
@@ -185,37 +188,37 @@ workflows:
   "build & test":
     jobs:
       - build
-      - test:
-          requires:
-            - build
-      - snyk-pr:
-          requires:
-            - build
-          filters:
-            branches:
-              ignore: master
-      - snyk-master:
-          requires:
-            - build
-          filters:
-            branches:
-              only: master
+#      - test:
+#          requires:
+#            - build
+#      - snyk-pr:
+#          requires:
+#            - build
+#          filters:
+#            branches:
+#              ignore: master
+#      - snyk-master:
+#          requires:
+#            - build
+#          filters:
+#            branches:
+#              only: master
       - publish-github-release:
           requires:
-            - test
-          filters:
-            branches:
-              only: master
-      - docker-build:
-          requires:
-            - test
-          filters:
-            branches:
-              only: master
-      - docker-publish:
-          requires:
-            - docker-build
-          filters:
-            branches:
-              only: master
+            - build
+#          filters:
+#            branches:
+#              only: master
+#      - docker-build:
+#          requires:
+#            - test
+#          filters:
+#            branches:
+#              only: master
+#      - docker-publish:
+#          requires:
+#            - docker-build
+#          filters:
+#            branches:
+#              only: master
 
