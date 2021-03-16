@@ -1,26 +1,28 @@
 <configuration>
-    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-        <!-- encoders are assigned the type
-             ch.qos.logback.classic.encoder.PatternLayoutEncoder by default -->
-        <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
-            <layout class="LoggerLayoutAppender"/>
-        </encoder>
-    </appender>
-    <!--
-    The org.apache http library is used by the aws sdk to perform http requests with the aws backend.
-    This library (the http one) outputs as debug the body of all the responses that come back from aws.
-    If these responses contain sensitive information that will be written to the logs if debug mode is
-    enabled. This occurred when a call to the aws library was executed to get a password out of the
-    parameter store. The following config silences the http library.
-    -->
     <variable name="LOG_LEVEL" value="${LOG_LEVEL:-INFO}" />
-    <variable name="THIRD_PARTY_LOG_LEVEL" value="${THIRD_PARTY_LOG_LEVEL:-INFO}" />
+    <variable name="LOG_DIRECTORY" value="${LOG_DIRECTORY:-/var/log/k2hb}" />
 
-    <logger name="org.apache" level="${THIRD_PARTY_LOG_LEVEL}" additivity="true">
-        <appender-ref ref="STDOUT"/>
-    </logger>
+    <appender name="FILE"
+              class="ch.qos.logback.core.rolling.RollingFileAppender">
+
+        <file>${LOG_DIRECTORY}/k2hb.log</file>
+
+        <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+            <layout class="uk.gov.dwp.dataworks.logging.LoggerLayoutAppender" />
+        </encoder>
+
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>k2hb.log.%d{yyyy-MM-dd}.gz</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>100GB</totalSizeCap>
+        </rollingPolicy>
+
+    </appender>
+    <appender name="METRICS" class="io.prometheus.client.logback.InstrumentedAppender" />
 
     <root level="${LOG_LEVEL}">
-        <appender-ref ref="STDOUT"/>
+        <appender-ref ref="FILE"/>
+        <appender-ref ref="METRICS"/>
     </root>
+
 </configuration>

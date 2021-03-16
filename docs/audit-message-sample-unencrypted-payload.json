@@ -1,0 +1,14 @@
+{
+  "auditId" :  "aaa-guid-bbb",
+  "obfuscatedToString" : "VIEW_CLAIMANT_TODO_LIST - {AUDIT_ID=iii-guid-jjj, IP_ADDRESS=127.0.0.1, CITIZEN_ID=ccc-guid-ddd}",
+  "aborted" : false,
+  "context" : {
+    "CITIZEN_ID" :  "ccc-guid-ddd",
+    "CLAIMANT1_ID" : "eee-guid-fff",
+    "IP_ADDRESS" : "127.0.0.1",
+    "CONTRACT_ID" : "ggg-guid-hhh",
+    "AUDIT_ID" : "iii-guid-jjj",
+    "CLAIMANT2_ID" : null
+  },
+  "auditType" : "VIEW_CLAIMANT_TODO_LIST"
+}

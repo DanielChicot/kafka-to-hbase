@@ -1,7 +1,7 @@
 version: 2.1
 
-orbs:
-  snyk: snyk/snyk@0.0.8
+#orbs:
+#  snyk: snyk/snyk@0.0.8
 
 executors:
   docker-publisher:
@@ -17,11 +17,12 @@ commands:
       - run:
           name: "Fetch current version, set next version"
           command: |
-            CURRENT_VERSION=$(curl --silent "https://api.github.com/repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-            [ -z "$CURRENT_VERSION" ] && CURRENT_VERSION="0.0.0"
-            NEXT_VERSION=$(echo $CURRENT_VERSION | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
-            echo NEXT_VERSION: \'$NEXT_VERSION\'
-            sed -i s/version=.*/version=$NEXT_VERSION/ gradle.properties
+            sed -i s/version=.*/version=0.0.1/ gradle.properties
+#            CURRENT_VERSION=$(curl --silent "https://api.github.com/repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+#            [ -z "$CURRENT_VERSION" ] && CURRENT_VERSION="0.0.0"
+#            NEXT_VERSION=$(echo $CURRENT_VERSION | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
+#            echo NEXT_VERSION: \'$NEXT_VERSION\'
+#            sed -i s/version=.*/version=$NEXT_VERSION/ gradle.properties
 
 jobs:
   build:
@@ -36,8 +37,8 @@ jobs:
       - run:
           name: "Build distribution"
           command: |
-            ./gradlew :unit build -x test
-            mkdir artifacts
+            K2HB_WRITE_TO_METADATA_STORE=true gradle :unit build -x test
+            mkdir -p artifacts
             cp -v README.md artifacts
             cp -v build/distributions/*.tar artifacts/
             gzip artifacts/*.tar
@@ -46,6 +47,14 @@ jobs:
           key: kafka-to-hbase-{{ checksum "build.gradle.kts" }}
           paths:
             - .gradle
+
+      - run: |
+          gradle distTar
+          gzip -9 build/distributions/*.tar
+
+      - store_artifacts:
+          path: build/distributions
+          destination: distributions
 
       - persist_to_workspace:
            root: artifacts
@@ -64,174 +73,193 @@ jobs:
           name: "Run the integration test"
           command: |
             sudo pip3 install docker-compose
+            docker-compose -f docker-compose.yaml down
             docker build --tag dwp-java:latest --file ./docker/java/Dockerfile .
             docker build --tag dwp-python-preinstall:latest --file ./docker/python/Dockerfile .
+            docker build --tag dwp-kotlin-slim-gradle-k2hb:latest --file ./docker/gradle/Dockerfile .
             VERSION=$(grep '^version' gradle.properties | cut -f2 -d'=')
-            docker-compose -f docker-compose.yaml build --build-arg VERSION=$VERSION zookeeper kafka hbase kafka2hbase kafka2s3 aws-s3 integration-test
-            docker-compose -f docker-compose.yaml up -d zookeeper kafka hbase kafka2hbase kafka2s3 aws-s3 integration-test
+            docker-compose -f docker-compose.yaml build --build-arg VERSION=$VERSION zookeeper kafka hbase aws-s3 metadatastore kafka2s3 s3-provision integration-test
+            docker-compose -f docker-compose.yaml up -d zookeeper kafka hbase aws-s3 metadatastore prometheus pushgateway
             S3_READY_REGEX=^Ready\.$
             while ! docker logs aws-s3 2> /dev/null | grep -q $S3_READY_REGEX; do
                 echo Waiting for aws-s3.
                 sleep 2
             done
-            docker-compose -f docker-compose.yaml up --build s3-provision
-            docker-compose -f docker-compose.yaml run --name integration-test integration-test ./gradlew --no-daemon :integration -x test
-            docker cp integration-test:/kafka2hbase/build/test-results .
+
+            docker-compose -f docker-compose.yaml up s3-provision
+
+            while ! docker logs metadatastore 2>&1 | grep "^Version"; do
+               echo Waiting for metadatastore.
+               sleep 2
+            done
+            sleep 5
+
+            docker exec -i metadatastore mysql --user=root --password=password metadatastore  < ./docker/metadatastore/create_table.sql
+            docker exec -i metadatastore mysql --user=root --password=password metadatastore  < ./docker/metadatastore/grant_user.sql
+
+            docker-compose -f docker-compose.yaml up -d kafka2s3
+            docker-compose -f docker-compose.yaml build --build-arg K2HB_WRITE_TO_METADATA_STORE=true kafka2hbase
+            docker-compose -f docker-compose.yaml up -d kafka2hbase kafka2hbaseequality
+            docker-compose -f docker-compose.yaml rm integration-test
+            docker-compose -f docker-compose.yaml run --name integration-test integration-test gradle --no-daemon --rerun-tasks integration-test integration-test-equality integration-load-test
       - store_test_results:
           path: test-results
       - store_artifacts:
           path: test-results
           destination: test-results
 
-  snyk-pr:
-    docker:
-      - image: circleci/openjdk:8-jdk
-    environment:
-      IMAGE_NAME: kafka-to-hbase
-    steps:
-      - checkout
-      # First snyk scan only looks for sev:high and will fail if found
-      - snyk/scan:
-          organization: dwp-dataworks
-          severity-threshold: high
-          target-file: build.gradle.kts
-          project: '${CIRCLE_PROJECT_REPONAME}/pr-kotlin'
-      - setup_remote_docker
-      - setversion
-      - run:
-          name: Build Docker image
-          command: |
-            VERSION=$(grep '^version' gradle.properties | cut -f2 -d'=')
-            docker build --build-arg VERSION=$VERSION -t $IMAGE_NAME:latest .
-      # Second snyk scan examines Docker container for sev:high and will fail if found
-      - snyk/scan:
-          organization: dwp-dataworks
-          docker-image-name: '$IMAGE_NAME:latest'
-          severity-threshold: high
-          target-file: Dockerfile
-          monitor-on-build: false
-          project: '${CIRCLE_PROJECT_REPONAME}/pr-docker'
+#  snyk-pr:
+#   docker:
+#     - image: circleci/openjdk:8-jdk
+#   environment:
+#     IMAGE_NAME: kafka-to-hbase
+#   steps:
+#     - checkout
+#     # First snyk scan only looks for sev:high and will fail if found
+#     - snyk/scan:
+#         organization: dwp-dataworks
+#         severity-threshold: high
+#         target-file: build.gradle.kts
+#         project: '${CIRCLE_PROJECT_REPONAME}/pr-kotlin'
+#     - setup_remote_docker
+#     - setversion
+#     - run:
+#         name: "Build docker image"
+#         command: |
+#           docker build --tag dwp-kotlin-slim-gradle-k2hb:latest --file ./docker/gradle/Dockerfile .
+#           VERSION=$(grep '^version' gradle.properties | cut -f2 -d'=')
+#           docker build --build-arg VERSION=$VERSION --build-arg K2HB_WRITE_TO_METADATA_STORE=true -t $IMAGE_NAME:latest .
+#     # Second snyk scan examines Docker container for sev:high and will fail if found
+#     - snyk/scan:
+#         organization: dwp-dataworks
+#         docker-image-name: '$IMAGE_NAME:latest'
+#         severity-threshold: high
+#         target-file: Dockerfile
+#         monitor-on-build: false
+#         project: '${CIRCLE_PROJECT_REPONAME}/pr-docker'
 
-  snyk-master:
-    docker:
-      - image: circleci/openjdk:8-jdk
-    environment:
-      IMAGE_NAME: kafka-to-hbase
-    steps:
-      - checkout
-      # First snyk scan only looks for sev:high and will fail if found
-      - snyk/scan:
-          organization: dwp-dataworks
-          severity-threshold: high
-          target-file: build.gradle.kts
-          project: '${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}-kotlin'
-      - setup_remote_docker
-      - setversion
-      - run:
-          name: Build Docker image
-          command: |
-            VERSION=$(grep '^version' gradle.properties | cut -f2 -d'=')
-            docker build --build-arg VERSION=$VERSION -t $IMAGE_NAME:latest .
-      # Second snyk scan examines Docker container for sev:high and will fail if found
-      - snyk/scan:
-          organization: dwp-dataworks
-          docker-image-name: '$IMAGE_NAME:latest'
-          severity-threshold: high
-          target-file: Dockerfile
-          project: '${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}-docker'
+#  snyk-master:
+#   docker:
+#     - image: circleci/openjdk:8-jdk
+#   environment:
+#     IMAGE_NAME: kafka-to-hbase
+#   steps:
+#     - checkout
+#     # First snyk scan only looks for sev:high and will fail if found
+#     - snyk/scan:
+#         organization: dwp-dataworks
+#         severity-threshold: high
+#         target-file: build.gradle.kts
+#         project: '${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}-kotlin'
+#     - setup_remote_docker
+#     - setversion
+#     - run:
+#         name: "Build docker image"
+#         command: |
+#           docker build --tag dwp-kotlin-slim-gradle-k2hb:latest --file ./docker/gradle/Dockerfile .
+#           VERSION=$(grep '^version' gradle.properties | cut -f2 -d'=')
+#           docker build --build-arg VERSION=$VERSION --build-arg K2HB_WRITE_TO_METADATA_STORE=true -t $IMAGE_NAME:latest .
+#     # Second snyk scan examines Docker container for sev:high and will fail if found
+#     - snyk/scan:
+#         organization: dwp-dataworks
+#         docker-image-name: '$IMAGE_NAME:latest'
+#         severity-threshold: high
+#         target-file: Dockerfile
+#         project: '${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}-docker'
 
 
-  publish-github-release:
-    docker:
-      - image: cibuilds/github:0.10
-    steps:
-      - attach_workspace:
-          at: ./artifacts
-      - run:
-          name: "Publish Release on GitHub"
-          command: |
-            CURRENT_VERSION=$(curl --silent "https://api.github.com/repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-            NEXT_VERSION=$(echo $CURRENT_VERSION | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
-            ghr -t ${GITHUB_TOKEN} -u ${CIRCLE_PROJECT_USERNAME} -r ${CIRCLE_PROJECT_REPONAME} -c ${CIRCLE_SHA1} -delete ${NEXT_VERSION} ./artifacts/
+#  publish-github-release:
+#    docker:
+#      - image: cibuilds/github:0.10
+#    steps:
+#      - attach_workspace:
+#          at: ./artifacts
+#      - run:
+#          name: "Publish Release on GitHub"
+#          command: |
+#            CURRENT_VERSION=$(curl --silent "https://api.github.com/repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+#            NEXT_VERSION=$(echo $CURRENT_VERSION | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
+#            ghr -t ${GITHUB_TOKEN} -u ${CIRCLE_PROJECT_USERNAME} -r ${CIRCLE_PROJECT_REPONAME} -c ${CIRCLE_SHA1} -delete ${NEXT_VERSION} ./artifacts/
 
-  docker-build:
-    executor: docker-publisher
-    steps:
-      - checkout
-      - setup_remote_docker
-      - setversion
-      - run:
-          name: Build Docker image
-          command: |
-            VERSION=$(grep '^version' gradle.properties | cut -f2 -d'=')
-            docker build --build-arg VERSION=$VERSION -t $IMAGE_NAME:latest .
-      - run:
-          name: Archive Docker image
-          command: docker save -o image.tar $IMAGE_NAME
-      - persist_to_workspace:
-          root: .
-          paths:
-            - ./image.tar
-
-  docker-publish:
-    executor: docker-publisher
-    steps:
-      - attach_workspace:
-          at: /tmp/workspace
-      - setup_remote_docker
-      - run:
-          name: Load archived Docker image
-          command: docker load -i /tmp/workspace/image.tar
-      - run:
-          name: Publish Docker Image to Docker Hub
-          command: |
-            LATEST_VERSION=$(curl --silent "https://api.github.com/repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-            read MAJOR MINOR PATCH \<<< $( echo $LATEST_VERSION | awk -F '[ .]' '{maj = $1+0; min = $2+0; patch = $3+0; print maj, min, patch}' )
-            docker tag $IMAGE_NAME:latest $IMAGE_NAME:$MAJOR
-            docker tag $IMAGE_NAME:latest $IMAGE_NAME:$MAJOR.$MINOR
-            docker tag $IMAGE_NAME:latest $IMAGE_NAME:$MAJOR.$MINOR.$PATCH
-            echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-            docker push $IMAGE_NAME:latest
-            docker push $IMAGE_NAME:$MAJOR
-            docker push $IMAGE_NAME:$MAJOR.$MINOR
-            docker push $IMAGE_NAME:$MAJOR.$MINOR.$PATCH
+#  docker-build:
+#    executor: docker-publisher
+#    steps:
+#      - checkout
+#      - setup_remote_docker
+#      - setversion
+#      - run:
+#          name: Build Docker image
+#          command: |
+#            docker build --tag dwp-kotlin-slim-gradle-k2hb:latest --file ./docker/gradle/Dockerfile .
+#            VERSION=$(grep '^version' gradle.properties | cut -f2 -d'=')
+#            docker build --build-arg VERSION=$VERSION --build-arg K2HB_WRITE_TO_METADATA_STORE=true -t $IMAGE_NAME:latest .
+#      - run:
+#          name: Archive Docker image
+#          command: docker save -o image.tar $IMAGE_NAME
+#      - persist_to_workspace:
+#          root: .
+#          paths:
+#            - ./image.tar
+#
+#  docker-publish:
+#    executor: docker-publisher
+#    steps:
+#      - attach_workspace:
+#          at: /tmp/workspace
+#      - setup_remote_docker
+#      - run:
+#          name: Load archived Docker image
+#          command: docker load -i /tmp/workspace/image.tar
+#      - run:
+#          name: Publish Docker Image to Docker Hub
+#          command: |
+#            LATEST_VERSION=$(curl --silent "https://api.github.com/repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+#            read MAJOR MINOR PATCH \<<< $( echo $LATEST_VERSION | awk -F '[ .]' '{maj = $1+0; min = $2+0; patch = $3+0; print maj, min, patch}' )
+#            docker tag $IMAGE_NAME:latest $IMAGE_NAME:$MAJOR
+#            docker tag $IMAGE_NAME:latest $IMAGE_NAME:$MAJOR.$MINOR
+#            docker tag $IMAGE_NAME:latest $IMAGE_NAME:$MAJOR.$MINOR.$PATCH
+#            echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+#            docker push $IMAGE_NAME:latest
+#            docker push $IMAGE_NAME:$MAJOR
+#            docker push $IMAGE_NAME:$MAJOR.$MINOR
+#            docker push $IMAGE_NAME:$MAJOR.$MINOR.$PATCH
 
 workflows:
   version: 2
   "build & test":
     jobs:
-      - build
-      - test:
-          requires:
-            - build
-      - snyk-pr:
-          requires:
-            - build
-          filters:
-            branches:
-              ignore: master
-      - snyk-master:
-          requires:
-            - build
-          filters:
-            branches:
-              only: master
-      - publish-github-release:
-          requires:
-            - test
-          filters:
-            branches:
-              only: master
-      - docker-build:
-          requires:
-            - test
-          filters:
-            branches:
-              only: master
-      - docker-publish:
-          requires:
-            - docker-build
-          filters:
-            branches:
-              only: master
-
+      - test
+#      - build
+#      - test:
+#          requires:
+#            - build
+#      - snyk-pr:
+#          requires:
+#            - build
+#          filters:
+#            branches:
+#              ignore: master
+#      - snyk-master:
+#          requires:
+#            - build
+#          filters:
+#            branches:
+#              only: master
+#      - publish-github-release:
+#          requires:
+#            - test
+#          filters:
+#            branches:
+#              only: master
+#      - docker-build:
+#          requires:
+#            - test
+#          filters:
+#            branches:
+#              only: master
+#      - docker-publish:
+#          requires:
+#            - docker-build
+#          filters:
+#            branches:
+#              only: master

@@ -1,0 +1,22 @@
+{
+  "traceId" : "aaa-guid-bbb",
+  "unitOfWorkId" : "ccc-guid-ddd",
+   "@type" : "V4",
+   "message": {
+       "@type": "hello",
+       "_id": {
+           "declarationId": "xxx-guid-yyy"
+       },
+       "_lastModifiedDateTime": "2019-07-04T07:27:35.104+0000",
+       "collection" : "addresses",
+       "db": "core",
+       "dbObject": "xx-some-encrypted-gibberish-xx",
+       "encryption": {
+           "keyEncryptionKeyId": "cloudhsm:12,34",
+           "initialisationVector": "vvvvvv",
+           "encryptedEncryptionKey": "kkkkkkk=="
+       }
+   },
+  "version" : "core-4.release_152.16",
+  "timestamp" : "2020-08-05T07:07:00.105+0000"
+}

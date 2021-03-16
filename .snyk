@@ -5,29 +5,33 @@ ignore:
   SNYK-JAVA-COMGOOGLEPROTOBUF-173761:
     - '*':
         reason: Transient dependency brought in by hbase-client with no direct upgrade or patch.
-        expires: 2020-08-20T00:00:00.000Z
+        expires: 2020-12-20T00:00:00.000Z
   SNYK-JAVA-COMMONSBEANUTILS-30077:
     - '*':
         reason: Transient dependency brought in by json-schema validator with no direct upgrade or patch.
-        expires: 2020-08-20T00:00:00.000Z
+        expires: 2020-12-20T00:00:00.000Z
   SNYK-JAVA-ORGAPACHEHADOOP-174573:
     - '*':
         reason: Transient dependency brought in by hbase-client with no direct upgrade or patch.
-        expires: 2020-08-20T00:00:00.000Z
+        expires: 2020-12-20T00:00:00.000Z
   SNYK-JAVA-ORGAPACHEHADOOP-32047:
     - '*':
         reason: Transient dependency brought in by hbase-client with no direct upgrade or patch.
-        expires: 2020-08-20T00:00:00.000Z
+        expires: 2020-12-20T00:00:00.000Z
   SNYK-JAVA-IONETTY-559515:
     - '*':
         reason: Transient dependency brought in by hbase-client with no direct upgrade or patch.
-        expires: 2020-08-20T00:00:00.000Z
+        expires: 2020-12-20T00:00:00.000Z
   SNYK-JAVA-IONETTY-559516:
     - '*':
         reason: Transient dependency brought in by hbase-client with no direct upgrade or patch.
-        expires: 2020-08-20T00:00:00.000Z
+        expires: 2020-12-20T00:00:00.000Z
   SNYK-JAVA-LOG4J-572732:
     - '*':
         reason: Transient dependency brought in by hbase-client with no direct upgrade or patch.
-        expires: 2020-08-20T00:00:00.000Z
+        expires: 2020-12-20T00:00:00.000Z
+  SNYK-JAVA-MYSQL-451464:
+    - '*':
+        reason: Transient dependency brought in by mysql-connector with no direct upgrade or patch.
+        expires: 2020-12-20T00:00:00.000Z
 patch: {}

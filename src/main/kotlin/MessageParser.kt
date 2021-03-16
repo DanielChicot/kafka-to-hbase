@@ -4,9 +4,9 @@ open class MessageParser {
 
     private val converter = Converter()
 
-    open fun generateKeyFromRecordBody(body: JsonObject?): ByteArray {
+    open fun generateKeyFromRecordBody(body: JsonObject?): Pair<String?, ByteArray> {
         val id: JsonObject? = body?.let { getId(it) }
-        return if (id == null) ByteArray(0) else generateKey(id)
+        return if (id == null) Pair(null, ByteArray(0)) else generateKey(id)
     }
 
     fun getId(json: JsonObject): JsonObject? {
@@ -44,9 +44,9 @@ open class MessageParser {
         }
     }
 
-    fun generateKey(json: JsonObject): ByteArray {
+    fun generateKey(json: JsonObject): Pair<String, ByteArray> {
         val jsonOrdered = converter.sortJsonByKey(json)
         val checksumBytes: ByteArray = converter.generateFourByteChecksum(jsonOrdered)
-        return checksumBytes.plus(jsonOrdered.toByteArray())
+        return Pair(jsonOrdered, checksumBytes.plus(jsonOrdered.toByteArray()))
     }
 }

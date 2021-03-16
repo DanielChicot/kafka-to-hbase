@@ -1,0 +1,20 @@
+{
+   "traceId" : "aaa-guid-bbb",
+   "unitOfWorkId" : "ccc-guid-ddd",
+   "@type" : "V4",
+   "message" : {
+       "dbObject" : "xx-some-encrypted-gibberish-xx",
+       "encryption" : {
+           "keyEncryptionKeyId" : "cloudhsm:12,34",
+           "encryptedEncryptionKey" : "kkkkkkkkkk",
+           "initialisationVector" : "vvvvvvvvv=="
+       },
+       "_lastModifiedDateTime" : "2020-05-21T17:18:15.693+0000",
+       "@type" : "AUDIT_LOG",
+       "_id" : {
+           "auditId" : "eee-guid-fff"
+       }
+   },
+   "version" : "core-4.release_147.3",
+   "timestamp" : "2020-05-21T17:18:15.706+0000"
+}

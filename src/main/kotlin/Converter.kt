@@ -2,6 +2,7 @@ import com.beust.klaxon.JsonObject
 import com.beust.klaxon.KlaxonException
 import com.beust.klaxon.Parser
 import com.beust.klaxon.lookup
+import uk.gov.dwp.dataworks.logging.DataworksLogger
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.*
@@ -14,7 +15,7 @@ open class Converter {
             val stringBuilder: StringBuilder = StringBuilder(String(body))
             return parser.parse(stringBuilder) as JsonObject
         } catch (e: KlaxonException) {
-            logger.warn("Error while parsing json", "cause", e.message?:"")
+            logger.warn("Error while parsing json", "cause" to (e.message?:""))
             throw IllegalArgumentException("Cannot parse invalid JSON")
         }
     }
@@ -50,7 +51,16 @@ open class Converter {
 
     open fun getLastModifiedTimestamp(json: JsonObject?): Pair<String, String> {
         val epoch = "1980-01-01T00:00:00.000+0000"
+        val recordType = json?.lookup<String?>("message.@type")?.get(0)
         val lastModifiedTimestampStr = json?.lookup<String?>("message._lastModifiedDateTime")?.get(0)
+
+        if (recordType == "MONGO_DELETE") {
+            val kafkaTimestampStr = json.lookup<String?>("timestamp")[0]
+            if (!kafkaTimestampStr.isNullOrBlank()) {
+                return Pair(kafkaTimestampStr, "kafkaMessageDateTime")
+            }
+        }
+
         if (!lastModifiedTimestampStr.isNullOrBlank()) {
             return Pair(lastModifiedTimestampStr, "_lastModifiedDateTime")
         }
@@ -64,6 +74,6 @@ open class Converter {
     }
 
     companion object {
-        val logger: JsonLoggerWrapper = JsonLoggerWrapper.getLogger(Converter::class.toString())
+        val logger = DataworksLogger.getLogger(Converter::class)
     }
 }

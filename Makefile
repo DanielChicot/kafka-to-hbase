@@ -1,4 +1,9 @@
+SHELL=bash
 S3_READY_REGEX=^Ready\.$
+RDBMS_READY_REGEX='mysqld: ready for connections'
+aws_dev_account=NOT_SET
+temp_image_name=NOT_SET
+aws_default_region=NOT_SET
 
 .PHONY: help
 help:
@@ -21,63 +26,81 @@ git-hooks: ## Set up hooks in .git/hooks
 		done \
 	}
 
-.PHONY: build
-build: ## Build Kafka2Hbase
-	./gradlew :unit build -x test
+hbase-up: ## Bring up and provision zookeeper and hbase
+	docker-compose -f docker-compose.yaml up -d zookeeper hbase
+	@{ \
+		echo Waiting for hbase.; \
+		while ! docker logs hbase 2>&1 | grep "Master has completed initialization" ; do \
+			sleep 2; \
+			echo Waiting for hbase.; \
+		done; \
+		sleep 5; \
+		echo ...hbase ready.; \
+	}
 
-.PHONY: dist
-dist: ## Assemble distribution files in build/dist
-	./gradlew assembleDist
+rdbms: ## Bring up and provision mysql
+	docker-compose -f docker-compose.yaml up -d metadatastore
+	@{ \
+		while ! docker logs metadatastore 2>&1 | grep "^Version" | grep 3306; do \
+			echo Waiting for metadatastore.; \
+			sleep 2; \
+		done; \
+		sleep 5; \
+	}
+	docker exec -i metadatastore mysql --user=root --password=password metadatastore < ./docker/metadatastore/create_table.sql
+	docker exec -i metadatastore mysql --user=root --password=password metadatastore < ./docker/metadatastore/grant_user.sql
 
-.PHONY: services
-services: ## Bring up Kafka2Hbase in Docker with supporting services
-	docker-compose up -d zookeeper kafka hbase aws-s3
+prometheus:
+	docker-compose up -d prometheus
+
+pushgateway:
+	docker-compose up -d pushgateway
+
+services: hbase-up rdbms prometheus pushgateway ## Bring up supporting services in docker
+	docker-compose -f docker-compose.yaml up --build -d kafka aws-s3
 	@{ \
 		while ! docker logs aws-s3 2> /dev/null | grep -q $(S3_READY_REGEX); do \
-        	echo Waiting for s3.; \
-            sleep 2; \
-        done; \
+			echo Waiting for s3.; \
+			sleep 2; \
+		done; \
 	}
-	docker-compose up s3-provision
-	docker-compose up -d kafka2s3
+	docker-compose up --build s3-provision
+	docker-compose up --build -d kafka2s3
 
-.PHONY: up
-up: ## Bring up Kafka2Hbase in Docker with supporting services
-	docker-compose up --build -d
 
-.PHONY: restart
-restart: ## Restart Kafka2Hbase and all supporting services
-	docker-compose restart
+mysql_root: ## Get a client session on the metadatastore database.
+	docker exec -it metadatastore mysql --user=root --password=password metadatastore
 
-.PHONY: down
-down: ## Bring down the Kafka2Hbase Docker container and support services
-	docker-compose down
+mysql_k2hbwriter: ## Get a client session on the metadatastore database.
+	docker exec -it metadatastore mysql --user=k2hbwriter --password=password metadatastore
 
-.PHONY: destroy
-destroy: down ## Bring down the Kafka2Hbase Docker container and services then delete all volumes
-	docker network prune -f
-	docker volume prune -f
+up: services ## Bring up Kafka2Hbase in Docker with supporting services
+	docker-compose -f docker-compose.yaml up --build -d kafka2hbase kafka2hbaseequality
 
-.PHONY: integration
-integration: ## Run the integration tests in a Docker container
-	docker-compose run --rm integration-test ./gradlew --rerun-tasks integration
+integration-tests:
+	docker-compose -f docker-compose.yaml run --name integration-test integration-test gradle --no-daemon \
+		--rerun-tasks integration-test integration-test-equality integration-load-test
 
-.PHONY: integration-all ## Build and Run all the tests in containers from a clean start
-integration-all: down destroy build-base build dist up test integration
-
-.PHONY: hbase-shell
-hbase-shell: ## Open an Hbase shell onto the running Hbase container
-	docker-compose run --rm hbase shell
-
-.PHONY: test
-test: ## Run the unit tests
-	./gradlew --rerun-tasks unit
-
-.PHONY: build-base
-build-base: ## build the base images which certain images extend.
+build-base: ## Build the base images which certain images extend.
 	@{ \
 		pushd docker; \
 		docker build --tag dwp-java:latest --file .java/Dockerfile . ; \
 		docker build --tag dwp-python-preinstall:latest --file ./python/Dockerfile . ; \
+		cp ../settings.gradle.kts ../gradle.properties . ; \
+		docker build --tag dwp-kotlin-slim-gradle-k2hb:latest --file ./gradle/Dockerfile . ; \
+		rm -rf settings.gradle.kts gradle.properties ; \
 		popd; \
-    }
+	}
+
+delete-topics: ## Delete a topic
+	docker exec -it kafka /opt/kafka/bin/kafka-topics.sh --zookeeper zookeeper:2181 --delete --topic '^(db.+|test-dlq-topic)'
+	make list-topics
+
+list-topics: ## List the topics
+	docker exec -it kafka /opt/kafka/bin/kafka-topics.sh --zookeeper zookeeper:2181 --list
+
+restart-prometheus:
+	docker stop prometheus pushgateway
+	docker rm prometheus pushgateway
+	docker-compose build prometheus
+	docker-compose up -d prometheus pushgateway

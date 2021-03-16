@@ -1,0 +1,35 @@
+{
+  "_id": {
+    "declarationId": "xxx-guid-yyy"
+  },
+  "@type": "E2E_KAFKA",
+  "contractId": "aaa-guid-bbb",
+  "addressNumber": {
+    "type": "AddressLine",
+    "cryptoId": "ccc-guid-ddd"
+  },
+  "addressLine2": null,
+  "townCity": {
+    "type": "AddressLine",
+    "cryptoId": "eee-guid-fff"
+  },
+  "postcode": "SM5 2LE",
+  "processId": "ggg-guid-hhh",
+  "effectiveDate": {
+    "type": "SPECIFIC_EFFECTIVE_DATE",
+    "date": 20150320,
+    "knownDate": 20150320
+  },
+  "paymentEffectiveDate": {
+    "type": "SPECIFIC_EFFECTIVE_DATE",
+    "date": 20150320,
+    "knownDate": 20150320
+  },
+  "createdDateTime": {
+    "$date": "2015-03-20T12:23:25.183Z"
+  },
+  "_version": 2,
+  "_lastModifiedDateTime": {
+    "$date": "2020-08-05T07:07:00.105+0000"
+  }
+}

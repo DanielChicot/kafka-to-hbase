@@ -3,10 +3,10 @@
 
 # Allow specifics
 !src
-!gradlew
 !build.gradle.kts
 !gradle.properties
 !settings.gradle.kts
 !gradle
 !entrypoint.sh
 !set-proxy.sh
+!AmazonRootCA1.pem

@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "$id": "http://dataworks.uc.dwp.gov.uk/schemas/audit_message.schema.json",
+  "type": "object",
+  "properties": {
+    "traceId": {
+      "type": ["string", "null"]
+    },
+    "unitOfWorkId": {
+      "type": ["string", "null"]
+    },
+    "@type": {
+      "type": "string"
+    },
+    "message": {
+      "type": "object",
+      "properties": {
+        "dbObject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "encryption": {
+          "type": "object",
+          "properties": {
+            "keyEncryptionKeyId": {
+              "type": "string",
+              "pattern": "^cloudhsm:\\d+,\\d+$"
+            },
+            "encryptedEncryptionKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "initialisationVector": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "keyEncryptionKeyId",
+            "encryptedEncryptionKey",
+            "initialisationVector"
+          ]
+        },
+        "_lastModifiedDateTime": {
+          "type": ["string", "null"],
+          "pattern": "^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}(\\+\\d{4}|Z)?)?$",
+          "$comment": "Note that the values we receive e.g. '2019-07-04T07:27:35.104+0000' are not suitable for the builtin date-time format."
+        },
+        "@type": {
+          "type": "string"
+        },
+        "_id": {
+          "type": "object",
+          "minProperties": 1,
+          "minLength": 1,
+          "properties": {
+            "auditId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "auditId"
+          ]
+        }
+      },
+      "required": [
+        "dbObject",
+        "encryption",
+        "@type",
+        "_id"
+      ]
+    },
+    "version": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": ["string", "null"],
+      "pattern": "^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}(\\+\\d{4}|Z)?)?$",
+      "$comment": "Note that the values we receive e.g. '2019-07-04T07:27:35.104+0000' are not suitable for the builtin date-time format."
+    }
+  },
+  "required": [
+    "traceId",
+    "unitOfWorkId",
+    "@type",
+    "message",
+    "version",
+    "timestamp"
+  ]
+}

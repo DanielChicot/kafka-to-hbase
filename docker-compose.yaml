@@ -1,7 +1,18 @@
 ---
-version: "2.2"
+version: "3"
 
 services:
+  prometheus:
+    build:
+      context: docker/prometheus
+    container_name: prometheus
+
+  pushgateway:
+    image: prom/pushgateway
+    ports:
+      - "9091:9091"
+    container_name: pushgateway
+
   zookeeper:
     image: confluentinc/cp-zookeeper:4.1.0
     container_name: zookeeper
@@ -11,16 +22,21 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2181
 
   kafka:
-    image: confluentinc/cp-kafka:4.1.0
+    image: wurstmeister/kafka:2.12-2.5.0
     ports:
       - "9092:9092"
     container_name: kafka
     depends_on:
       - zookeeper
     environment:
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_ADVERTISED_HOST_NAME: "kafka"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_DELETE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 20
+      KAFKA_CREATE_TOPICS: "db.test.collection:20:1"
 
   hbase:
     image: hbase:latest
@@ -40,13 +56,94 @@ services:
     depends_on:
       - kafka
       - hbase
+      - metadatastore
     environment:
+      APP_VERSION: "test"
+      APPLICATION: "k2hb-main"
+      AWS_ACCESS_KEY_ID: "aws-access-key"
+      AWS_SECRET_ACCESS_KEY: "aws-secret-access-key"
+      COMPONENT: "jar-file"
+      DUMMY_SECRET_METASTORE_PASSWORD: "password"
+      ENVIRONMENT: "local-dev"
+      INSTANCE_ID: "localhost"
       JAVA_OPTS: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"
+      K2HB_AWS_S3_BATCH_PUTS: "true"
+      K2HB_AWS_S3_MANIFEST_DIRECTORY: "manifest_prefix"
+      K2HB_AWS_S3_USE_LOCALSTACK: "true"
+      K2HB_HBASE_OPERATION_TIMEOUT_MILLISECONDS": "1800"
+      K2HB_HBASE_PAUSE_MILLISECONDS: "50"
+      K2HB_HBASE_RETRIES": "3"
+      K2HB_HBASE_RPC_TIMEOUT_MILLISECONDS: "1200"
+      K2HB_IMAGE_DIGEST: "latest"
+      K2HB_INSTANCE_NAME: "k2hb-integration-test-container"
+      K2HB_KAFKA_DLQ_TOPIC: "test-dlq-topic"
       K2HB_KAFKA_INSECURE: "true"
-      K2HB_KAFKA_TOPIC_REGEX: "^db.(.*)"
+      K2HB_KAFKA_MAX_POLL_RECORDS: "10"
       K2HB_KAFKA_META_REFRESH_MS: "1000"
       K2HB_KAFKA_POLL_TIMEOUT: "PT10S"
+      K2HB_KAFKA_TOPIC_EXCLUSION_REGEX: db\.excluded\.[-\w]+
+      K2HB_KAFKA_TOPIC_REGEX: (db[.]{1}[-\w]+[.]{1}[-.\w]+)
+      K2HB_METRICS_DELETE_METRICS: "false"
+      K2HB_QUALIFIED_TABLE_PATTERN: \w+\.([-\w]+)\.([-.\w]+)
+      K2HB_RDS_DATABASE_NAME: "metadatastore"
+      K2HB_RDS_ENDPOINT: "metadatastore"
+      K2HB_RDS_PASSWORD_SECRET_NAME: "password"
+      K2HB_RDS_PORT: "3306"
+      K2HB_RDS_USERNAME: "k2hbwriter"
+      K2HB_RETRY_BACKOFF_MULTIPLIER: "1"
+      K2HB_RETRY_INITIAL_BACKOFF: "1"
+      K2HB_RETRY_MAX_ATTEMPTS: "3"
+      K2HB_USE_AWS_SECRETS: "false"
+      K2HB_VALIDATOR_SCHEMA: "business_message.schema.json"
+      K2HB_WRITE_TO_METADATA_STORE: "true"
+      LOG_LEVEL: "DEBUG"
+
+  kafka2hbaseequality:
+    image: kafka2hbase:latest
+    build: ./
+    container_name: kafka2hbaseequality
+    ports:
+      - "5006:5005"
+    depends_on:
+      - kafka
+      - hbase
+      - metadatastore
+    environment:
+      APP_VERSION: "test"
+      APPLICATION: "k2hb-equality"
+      ENVIRONMENT: "local-dev"
+      COMPONENT: "jar-file"
+      LOG_LEVEL: "DEBUG"
+      AWS_ACCESS_KEY_ID: "aws-access-key"
+      AWS_SECRET_ACCESS_KEY: "aws-secret-access-key"
+      DUMMY_SECRET_METASTORE_PASSWORD: "password"
+      INSTANCE_ID: "localhost"
+      JAVA_OPTS: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"
+      K2HB_AWS_S3_USE_LOCALSTACK: "true"
+      K2HB_HBASE_OPERATION_TIMEOUT_MILLISECONDS": "1800"
+      K2HB_HBASE_PAUSE_MILLISECONDS: "50"
+      K2HB_HBASE_RETRIES": "3"
+      K2HB_HBASE_RPC_TIMEOUT_MILLISECONDS: "1200"
+      K2HB_IMAGE_DIGEST: "latest"
       K2HB_KAFKA_DLQ_TOPIC: "test-dlq-topic"
+      K2HB_KAFKA_INSECURE: "true"
+      K2HB_KAFKA_MAX_POLL_RECORDS: "10"
+      K2HB_KAFKA_META_REFRESH_MS: "1000"
+      K2HB_KAFKA_POLL_TIMEOUT: "PT10S"
+      K2HB_RDS_DATABASE_NAME: "metadatastore"
+      K2HB_RDS_ENDPOINT: "metadatastore"
+      K2HB_RDS_PASSWORD_SECRET_NAME: "password"
+      K2HB_RDS_PORT: "3306"
+      K2HB_RDS_USERNAME: "k2hbwriter"
+      K2HB_RETRY_BACKOFF_MULTIPLIER: "1"
+      K2HB_RETRY_INITIAL_BACKOFF: "1"
+      K2HB_RETRY_MAX_ATTEMPTS: "3"
+      K2HB_USE_AWS_SECRETS: "false"
+      K2HB_VALIDATOR_SCHEMA: "equality_message.schema.json"
+      K2HB_KAFKA_TOPIC_REGEX: (data[.][-\w]+)
+      K2HB_KAFKA_TOPIC_EXCLUSION_REGEX: "NOT_SET"
+      K2HB_QUALIFIED_TABLE_PATTERN: ([-\w]+)\.([-\w]+)
+      K2HB_AWS_S3_WRITE_MANIFESTS: "false"
 
   kafka2s3:
     image: dwpdigital/kafka-to-s3:latest
@@ -55,11 +152,16 @@ services:
       - kafka
       - s3-provision
     environment:
+      K2HB_ENVIRONMENT: "local-dev"
+      K2HB_APPLICATION_NAME: "k2h3"
+      K2HB_APP_VERSION: "test"
+      INSTANCE_ID: "localhost"
       K2S3_KAFKA_INSECURE: "true"
       K2S3_DEAD_LETTER_QUEUE: "test-dlq-topic"
       K2S3_KAFKA_META_REFRESH_MS: "1000"
       K2S3_KAFKA_POLL_TIMEOUT: "PT10S"
       AWS_S3_PREFIX_BASE: "prefix"
+      AWS_ENDPOINT_S3: "http://aws-s3:4566"
 
   aws-s3:
     image: localstack/localstack:latest
@@ -69,25 +171,29 @@ services:
     container_name: aws-s3
     environment:
       - SERVICES=s3
-      - DEBUG=1
-      - DATA_DIR=/opt/s3/data
 
   s3-provision:
-      image: s3-bucket-provision
-      build: ./docker/s3
-      container_name: s3-provision
-      depends_on:
-        - aws-s3
-      environment:
-        - S3_SERVICE_ENDPOINT=http://aws-s3:4572
-        - AWS_REGION=eu-west-2
-        - AWS_DEFAULT_REGION=eu-west-2
-        - AWS_ACCESS_KEY_ID=aws-access-key
-        - AWS_SECRET_ACCESS_KEY=aws-secret-access-key
-        - S3_BUCKET=kafka2s3
+    image: s3-bucket-provision
+    build: ./docker/s3
+    container_name: s3-provision
+    depends_on:
+      - aws-s3
+
+  metadatastore:
+    image: mysql:5.7
+    ports:
+      - "3306:3306"
+    restart: always
+    container_name: metadatastore
+    environment:
+      MYSQL_ROOT_PASSWORD: "password"
+      MYSQL_DATABASE: "metadatastore"
+      MYSQL_USER: "k2hbwriter"
+      MYSQL_PASSWORD: "password"
 
   integration-test:
     image: kafka2hbase-integration:latest
+    container_name: integration-test
     build:
       dockerfile: Dockerfile_integration
       context: ./
@@ -96,12 +202,26 @@ services:
       - kafka2s3
     command: "true"
     environment:
-      USER_NAME: "user"
+      AWS_ACCESS_KEY_ID: "aws-access-key"
+      AWS_SECRET_ACCESS_KEY: "aws-secret-access-key"
+      DUMMY_SECRET_METASTORE_PASSWORD: "password"
       GROUP_NAME: "usergroup"
+      INSTANCE_ID: "localhost"
+      K2HB_APP_VERSION: "test"
+      K2HB_APPLICATION_NAME: "k2hb-integration-test"
+      K2HB_AWS_S3_USE_LOCALSTACK: "true"
+      K2HB_ENVIRONMENT: "local-dev"
+      K2HB_KAFKA_DLQ_TOPIC: "test-dlq-topic"
       K2HB_KAFKA_INSECURE: "true"
       K2HB_KAFKA_META_REFRESH_MS: "1000"
       K2HB_KAFKA_POLL_TIMEOUT: "PT10S"
-      K2HB_RETRY_MAX_ATTEMPTS: "3"
-      K2HB_RETRY_INITIAL_BACKOFF: "1"
+      K2HB_RDS_DATABASE_NAME: "metadatastore"
+      K2HB_RDS_ENDPOINT: "metadatastore"
+      K2HB_RDS_PASSWORD_SECRET_NAME: "password"
+      K2HB_RDS_PORT: "3306"
+      K2HB_RDS_USERNAME: "k2hbwriter"
       K2HB_RETRY_BACKOFF_MULTIPLIER: "1"
-      K2HB_KAFKA_DLQ_TOPIC: "test-dlq-topic"
+      K2HB_RETRY_INITIAL_BACKOFF: "1"
+      K2HB_RETRY_MAX_ATTEMPTS: "3"
+      K2HB_USE_AWS_SECRETS: "false"
+      USER_NAME: "user"

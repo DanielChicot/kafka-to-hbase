@@ -1,134 +1,104 @@
-import kotlinx.coroutines.*
-import org.apache.hadoop.hbase.client.HBaseAdmin
+
+import io.prometheus.client.Gauge
 import org.apache.kafka.clients.consumer.KafkaConsumer
+import sun.misc.Signal
+import uk.gov.dwp.dataworks.logging.DataworksLogger
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.system.measureTimeMillis
+import kotlin.time.ExperimentalTime
 
-val logger: JsonLoggerWrapper = JsonLoggerWrapper.getLogger("ShovelKt")
+@ExperimentalTime
+class Shovel(private val consumer: KafkaConsumer<ByteArray, ByteArray>,
+             private val k2hbGauge: Gauge,
+             private val maximumLagGauge: Gauge) {
 
-fun shovelAsync(consumer: KafkaConsumer<ByteArray, ByteArray>, hbase: HbaseClient, pollTimeout: Duration) =
-    GlobalScope.async {
+    @ExperimentalTime
+    suspend fun shovel(metadataClient: MetadataStoreClient,
+                       corporateStorageService: CorporateStorageService,
+                       manifestService: ManifestService,
+                       pollTimeout: Duration) {
+        k2hbGauge.inc()
+        listOf("INT", "TERM").forEach(::handleSignal)
         val parser = MessageParser()
         val validator = Validator()
         val converter = Converter()
-        val processor = RecordProcessor(validator, converter)
-        val offsets = mutableMapOf<String, Map<String, String>>()
+        val listProcessor =
+            ListProcessor(validator, converter, MetricsClient.dlqTimer,
+                MetricsClient.dlqRetries, MetricsClient.dlqFailures,
+                MetricsClient.batchTimer, MetricsClient.batchFailures,
+                MetricsClient.recordSuccesses, MetricsClient.recordFailures)
+
         var batchCount = 0
-        val usedPartitions = mutableMapOf<String, MutableSet<Int>>()
-        while (isActive) {
-            try {
-                validateHbaseConnection(hbase)
-                logger.debug(
-                    "Subscribing",
-                    "topic_regex", Config.Kafka.topicRegex.pattern(),
-                    "metadata_refresh", Config.Kafka.metadataRefresh()
-                )
-                consumer.subscribe(Config.Kafka.topicRegex)
 
+        logger.info("Subscription regexes",
+            "includes_regex" to Config.Kafka.topicRegex.pattern,
+            "excludes_regex" to Config.Kafka.topicExclusionRegexText)
 
-                logger.info(
-                    "Polling",
-                    "poll_timeout", pollTimeout.toString(),
-                    "topic_regex", Config.Kafka.topicRegex.pattern()
-                )
+        while (!closed.get()) {
 
-                val records = consumer.poll(pollTimeout)
+            SubscriberUtility.subscribe(consumer, Config.Kafka.topicRegex, Config.Kafka.topicExclusionRegex)
 
-                if (records.count() > 0) {
-                    logger.info("Processing records", "record_count", records.count().toString())
-                    for (record in records) {
-                        processor.processRecord(record, hbase, parser)
-                        offsets[record.topic()] = mutableMapOf(
-                            "offset" to "${record.offset()}",
-                            "partition" to "${record.partition()}"
-                        )
-                        val set =
-                            if (usedPartitions.containsKey(record.topic())) usedPartitions[record.topic()] else mutableSetOf()
-                        set?.add(record.partition())
-                        usedPartitions[record.topic()] = set!!
+            logger.info("Polling", "timeout" to "$pollTimeout")
+
+            val records = consumer.poll(pollTimeout)
+
+            if (records.count() > 0) {
+                HbaseClient.connect().use { hbase ->
+                    val timeTaken = measureTimeMillis {
+                        listProcessor.processRecords(hbase, consumer, metadataClient, corporateStorageService,
+                            manifestService, parser, records)
                     }
-                    logger.info("Committing offset")
-                    consumer.commitSync()
+                    logger.info("Processed batch", "time_taken" to "$timeTaken", "size" to "${records.count()}")
                 }
+            }
 
-                if (batchCountIsMultipleOfReportFrequency(batchCount++)) {
-                    printLogs(consumer, offsets, usedPartitions)
-                }
-
-            } catch (e: HbaseReadException) {
-                logger.error("Error writing to Hbase", e)
-                cancel(CancellationException("Error writing to Hbase ${e.message}", e))
-            } catch (e: Exception) {
-                logger.error("Error reading from Kafka", e)
-                cancel(CancellationException("Error reading from Kafka ${e.message}", e))
+            if (batchCountIsMultipleOfReportFrequency(batchCount++)) {
+                printLogs(consumer)
             }
         }
     }
 
-fun validateHbaseConnection(hbase: HbaseClient) {
-    val maxAttempts = Config.Hbase.retryMaxAttempts
-    val initialBackoffMillis = Config.Hbase.retryInitialBackoff
-
-    var success = false
-    var attempts = 0
-
-    while (!success && attempts < maxAttempts) {
-        try {
-            HBaseAdmin.checkHBaseAvailable(hbase.connection.configuration)
-            success = true
-        } catch (e: Exception) {
-            val delay: Long = if (attempts == 0) initialBackoffMillis
-            else (initialBackoffMillis * attempts * 2)
-            logger.warn(
-                "Failed to connect to Hbase after multiple attempts",
-                "attempt", (attempts + 1).toString(),
-                "max_attempts", maxAttempts.toString(),
-                "retry_delay", delay.toString()
-            )
-            Thread.sleep(delay)
-        } finally {
-            attempts++
+    private fun handleSignal(signalName: String) {
+        logger.info("Setting up $signalName handler.")
+        Signal.handle(Signal(signalName)) {
+            logger.info("Signal received, cancelling job.", "signal" to "$it")
+            k2hbGauge.dec()
+            closed.set(true)
+            consumer.wakeup()
+            MetricsClient.pushFinalMetrics()
         }
     }
 
-    if (!success) {
-        throw HbaseReadException("Unable to reconnect to Hbase after $attempts attempts")
-    }
-}
+    private fun printLogs(consumer: KafkaConsumer<ByteArray, ByteArray>) {
+        consumer.metrics().filter { it.key.group() == "consumer-fetch-manager-metrics" }
+            .filter { it.key.name() == "records-lag-max" }
+            .mapNotNull { it.value }
+            .forEach { metric ->
+                val max = metric.metricValue() as Double
+                if (!max.isNaN()) {
+                    metric.metricName().tags().takeIf { tags ->
+                        tags.containsKey("topic") && tags.containsKey("partition")
+                    } ?.let { tags ->
+                        logger.info("Max record lag", "lag" to "$max",
+                            "topic" to "${tags["topic"]}", "partition" to "${tags["partition"]}")
+                        maximumLagGauge.labels(tags["topic"], tags["partition"]).set(max)
+                    }
+                }
+            }
 
-fun printLogs(
-    consumer: KafkaConsumer<ByteArray, ByteArray>,
-    offsets: MutableMap<String, Map<String, String>>,
-    usedPartitions: MutableMap<String, MutableSet<Int>>
-) {
-    logger.info("Total number of topics", "number_of_topics", offsets.size.toString())
-    offsets.forEach { (topic, offset) ->
-        logger.info(
-            "Offset",
-            "topic_name", topic,
-            "offset", offset["offset"] ?: "NOT_SET",
-            "partition", offset["partition"] ?: "NOT_SET"
-        )
-    }
-    usedPartitions.forEach { (topic, ps) ->
-        logger.info(
-            "Partitions read from for topic",
-            "topic_name", topic,
-            "partitions", ps.sorted().joinToString(", ")
-        )
+        consumer.listTopics()
+            .filter { (topic, _) -> Config.Kafka.topicRegex.matches(topic) }
+            .forEach { (topic, _) ->
+                logger.info("Subscribed to topic", "topic_name" to topic)
+            }
     }
 
-    consumer.metrics().filter { it.key.group() == "consumer-fetch-manager-metrics" }
-        .filter { it.key.name() == "records-lag-max" }
-        .map { it.value }
-        .forEach { logger.info("Max record lag", "lag", it.metricValue().toString()) }
+    fun batchCountIsMultipleOfReportFrequency(batchCount: Int): Boolean =
+        (batchCount % Config.Shovel.reportFrequency) == 0
 
-    consumer.listTopics()
-        .filter { (topic, _) -> Config.Kafka.topicRegex.matcher(topic).matches() }
-        .forEach { (topic, _) ->
-            logger.info("Subscribed to topic", "topic_name", topic)
-        }
-}
-
-fun batchCountIsMultipleOfReportFrequency(batchCount: Int): Boolean {
-    return (batchCount % Config.Shovel.reportFrequency) == 0
+    companion object {
+        private val logger = DataworksLogger.getLogger(Shovel::class)
+        private val closed: AtomicBoolean = AtomicBoolean(false)
+    }
 }

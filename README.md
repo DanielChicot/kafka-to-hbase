@@ -1,4 +1,13 @@
-# Kafka2Hbase
+# Kafka to HBase
+
+## Links
+
+1. [Application Configurations](docs/k2hb-configurations.md)
+1. [Local Development](docs/local-development.md)
+1. [Kafka samples and tutorial](docs/kafka-tutorial-samples.md)
+1. [Agreed Schemas with upstream sources](agreed_schemas_with_upstream_sources)
+
+## Summary
 
 Providing a way of migrating data in Kafka topics into tables in Hbase,
 preserving versions based on Kafka message timestamps.
@@ -8,253 +17,108 @@ of the message and one to store a count and last received date of the
 topic. These are configured using the `K2HB_KAFKA_TOPIC_*` and
 `K2HB_KAFKA_DATA_*` environment variables.
 
-By default the data table is `k2hb:ingest` with a column family of `topic`.
+By default, if the kafka topic is `db.database-name.collection-name` the data table is `database_name:collection_name` 
+with a column family of `topic`. 
+Collections support additional `.` characters but hbase does not, so from `db.database-name.coll-ection.name` we would 
+get a table `database_name:coll_ection_name`
+
 The qualifier is the topic name, the body of the cell is the raw message
 received from Kafka and the version is the timestamp of the message in
 milliseconds.
 
-Along with the data of the message a counter is kept for each topic to
-indicate how many messages have been processed and when. This is useful for
-creating a list of topics to process or limiting that list to only topics
-that have received new data since a given time. The default table is
-`k2hb:ingest-topic` and the default column is `c:msg`.
-
-For example, after receiving a single message on `test-topic` the data
-is as follows:
+For example, after receiving a single message on `db.my.data` the data
+is saved as follows:
 
 ```
-hbase(main):001:0> scan 'k2hb:ingest'
-ROW                                                          COLUMN+CELL
- 63213667-c5a5-4411-a93b-e2da709c553e                        column=topic:test-topic, timestamp=1563547895682, value=<message body>
+hbase(main):001:0> scan 'my:data'
+ROW                                       COLUMN+CELL
+ 63213667-c5a5-4411-a93b-e2da709c553e     column=topic:my:data, timestamp=1563547895682, value=<entire message body>
 1 row(s) in 0.1090 seconds
-
-hbase(main):002:0> scan 'k2hb:ingest-topic'
-ROW                                                          COLUMN+CELL
- test-topic                                                  column=c:msg, timestamp=1563547895689, value=\x00\x00\x00\x00\x00\x00\x00\x01
-1 row(s) in 0.0100 seconds
 ```
 
-Kafka2Hbase will attempt to create the required namespaces, tables and
-column families on startup. If they already exist, nothing will happen. By
-default the data table column family has a maximum of MAXINT versions
-(approximately 2.1 billion) and a minimum of 1 version. There is no TTL.
-The topic counter column family has no versioning or TTL.
+Kafka2Hbase will attempt to create the required namespaces, tables and column families on startup - If they already exist, nothing will happen. 
 
-## Makefile
+By default, the data table column family has a maximum of MAXINT versions (approximately 2.1 billion) and a minimum of 1 version; There is no TTL.
 
-A Makefile wraps some of the gradle and docker-compose commands to give a
-more unified basic set of operations. These can be checked by running:
+## Agreed Schemas with upstream sources.
 
-```
-$ make help
-```
+Currently, the only upstream source is the UC Kafka Broker.
 
-## Build
+All the schemas are found in [src/main/resources](src/main/resources)
 
-Ensure a JVM is installed and run the gradle wrapper.
+### UC Common elements
 
-    make build
+* `$.@type`, `$.version`, and `$.timestamp` are standard wrapper elements, so they should always be present.
+* All have a few root elements that are mandatory but may be null:
+  * `$.unitOfWorkId` is nullable.  In practice it will always be there for the business messages, but UC don't enforce that and it wouldn't be wrong if it was null. UC use it for application-level transactions, so it's almost always present.  But there are circumstances where we do things outside of a transaction (usually for long-running batch jobs), so it's not guaranteed.
+  * `$.traceId` can also be nullable, for the same reasons.  It would not be null in practice, but in terms of validation it wouldn't be invalid if it were null. UC log audit messages outside of a transaction sometimes, as those are generated on some read-only events.  It would be unusual to do so for DB-writes, but not impossible.  As for equality messages, that logic pathway is simple enough that they never write them outside of a transaction at present, but there's nothing stopping that changing in future, so it would be a better fit (in terms of business rules) if it was nullable there too.
+* All require the `$.message` block.
+* All require the `$.message.encryption` block, and carry the dbObject as encrypted data.
+* We reject any message with a `$.message.dbObject` that looks like JSON.
 
-## Distribute
+### UC Business Data Schema
 
-If a standard zip file is required, just use the assembleDist command.
+* For Business messages we should only assert that `$.message._id` exists, as what is in it can vary a lot per collection, in structure, type and content.
+* Business messages always have `$.message.db`.
+* Business messages always have `$.message.collection`.
+* These are sourced from many topics, the name of which is deterministically related to the `db` and `collection`.
+* Sample kafka message: [business-message-sample.json](docs/business-message-sample.json)
+* Sample unencrypted message payload from `dbObject`: [business-message-sample-unencrypted-payload.json](docs/business-message-sample-unencrypted-payload.json)
+  * Note that k2hb does not decrypt this, it is for reference only
+  * Note that the payloads of each collection differ wildly.
 
-    make dist
+### UC Equality Data Schema
 
-This produces a zip and a tarball of the latest version.
+* Equality messages will always have exactly `$.message._id.messageId="non-zero-string"` so we can insist on `messageId` always existing and being >1 in length.
+* Equality messages do not have `$.message.db` or `$.message.collection` as this is non-specific Equality Act data like demographic spreads.
+* These are sourced from a single static collection.
+* Sample kafka message: [equality-message-sample.json](docs/equality-message-sample.json)
+* Sample unencrypted message payload from `dbObject`: [equality-message-sample-unencrypted-payload.json](docs/equality-message-sample-unencrypted-payload.json)
+  * Note that k2hb does not decrypt this, it is for reference only
 
-## Run full local stack
+### UC Audit Data Schema
 
-A full local stack can be run using the provided Dockerfile and Docker
-Compose configuration. The Dockerfile uses a multi-stage build so no
-pre-compilation is required.
+* Audit messages will always have exactly `$.message._id.auditId="non-zero-string"` so we can insist on it always existing and being >1 in length.
+* Audit messages do not have `$.message.db` or `$.message.collection` as this is non-specific Audit information like which user logged on to the system, or which type of update was performed.
+* These are sourced from a single static collection.
+* Sample kafka message: [audit-message-sample.json](docs/audit-message-sample.json)
+* Sample unencrypted message payload from `dbObject`: [audit-message-sample-unencrypted-payload.json](docs/audit-message-sample-unencrypted-payload.json)
+  * Note that k2hb does not decrypt this, it is for reference only
 
-    make up
-
-The environment can be stopped without losing any data:
-
-    make down
-
-Or completely removed including all data volumes:
-
-    make destroy
-
-## Run integration tests
-
-Integration tests can be executed inside a Docker container to make use of
-the Kafka and Hbase instances running in the local stack. The integration
-tests are written in Kotlin and use the standard `kotlintest` testing framework.
-
-    make integration-all -> to run from a clean build
-    make integration -> to run just the tests again with everything running
-
-## Run unit tests
-
-The unit tests use JUnit to run and are written using specification language.
-They can be executed with the following command.
-
-    make test
-
-## Run in an IDE
-
-Both Kafka2HBase and the integration tests can be run in an IDE to facilitate
-quicker feedback then a containerized approach. This is useful during active development.
-
-To do this first bring up the hbase, kafka and zookeeper containers:
-
-    make services
-
-On the run configuration for Kafka2Hbase set the following environment variables
-(nb not system properties)
-
-    K2HB_HBASE_ZOOKEEPER_QUORUM=localhost;K2HB_KAFKA_POLL_TIMEOUT=PT2S
-
-And on the run configuration for the integration tests set these:
-
-    K2HB_KAFKA_BOOTSTRAP_SERVERS=localhost:9092;K2HB_HBASE_ZOOKEEPER_QUORUM=localhost
-
-Then insert into your local hosts file the names, IP addresses of the kafka and
-hbase containers:
-
-    ./hosts.sh
-
-## Getting logs
-
-The services are listed in the `docker-compose.yaml` file and logs can be
-retrieved for all services, or for a subset.
-
-    docker-compose logs hbase
-
-The logs can be followed so new lines are automatically shown.
-
-    docker-compose logs -f hbase
-
-## Getting an HBase shell
-
-To access the HBase shell it's necessary to use a Docker container. This
-can be run as a separate container.
-
-    make hbase-shell
-
-## Configuration
-
-There are a number of environment variables that can be used to configure
-the system. Some of them are for configuring Kafka2Hbase itself, and some
-are for configuring the built-in ACM PCA client to perform mutual auth.
-
-### Kafka2Hbase Configuration
-
-#### Hbase
-
-By default Kafka2Hbase will connect to Zookeeper at `zookeeper:2181` use the parent uri `hbase`
-and create tables in the `k2hb` namespace. The data will be stored in `cf:data`
-with at least `1` version and at most `10` versions and a TTL of 10 days.
-
-* **K2HB_HBASE_ZOOKEEPER_PARENT**
-    The hbase parent uri, defaults to `/hbase` but should be set to `/hbase-unsecure` for AWS HBase
-* **K2HB_HBASE_ZOOKEEPER_QUORUM**
-    Comma separated list of Zookeeper servers
-* **K2HB_HBASE_ZOOKEEPER_PORT**
-    The listening port of the Zookeeper servers
-* **K2HB_HBASE_DATA_TABLE**
-    The name of the table to store message bodies in
-* **K2HB_HBASE_DATA_FAMILY**
-    The name of the column family to store message bodies in
-* **K2HB_HBASE_TOPIC_TABLE**
-    The name of the table to store topic message counts in
-* **K2HB_HBASE_TOPIC_FAMILY**
-    The name of the column family to store topic message counts in
-* **K2HB_HBASE_TOPIC_QUALIFIER**
-    The name of the column qualifier to store topic message counts in
-
-#### Kafka
-
-By default Kafka2Hbase will connect to Kafka at `kafka:9092` in the `k2hb`
-consumer group. It will poll the `test-topic` topic with a poll timeout of
-`10` days, and refresh the topics list every 10 seconds (`10000` ms).
-
-* **K2HB_KAFKA_BOOTSTRAP_SERVERS**
-    Comma separated list of Kafka servers and ports
-* **K2HB_KAFKA_CONSUMER_GROUP**
-    The name of the consumer group to join
-* **K2HB_KAFKA_TOPIC_REGEX**
-    A regex that will fetch a list of topics to listen to, e.g. `db.*`. Defaults to `test-topic.*`
-* **K2HB_KAFKA_META_REFRESH_MS** (Optional)
-    The frequency that the consumer will ask the broker for metadata updates, which also checks for new topics.
-    Defaults to `10000` ms (10 seconds).
-    Typically, should be an order of magnitude less than `K2HB_KAFKA_POLL_TIMEOUT`, else new topics will not be discovered within each polling interval.
-* **K2HB_KAFKA_POLL_TIMEOUT**
-    The maximum time to wait for messages in ISO-8601 duration format (e.g. `PT10S`).
-    Defaults to 1 Hour.
-    Should be greater than `K2HB_KAFKA_META_REFRESH_MS`, else new topics will not be discovered within each polling interval.
-* **K2HB_KAFKA_INSECURE**
-    Disable SSL entirely (useful for dev / test) with `K2HB_KAFKA_INSECURE=true`
-* **K2HB_KAFKA_CERT_MODE**
-    If SSL is enabled, either create certs in ACM-PCA with value `CERTGEN` or retrieve
-    them from ACM with value `RETRIEVE`
-
-#### SSL Mutual Authentication (CERTGEN mode)
-
-By default the SSL is enabled but has no defaults. These must either be
-configured in full or disabled entirely via `K2HB_KAFKA_INSECURE=FALSE`
-and `K2HB_KAFKA_CERT_MODE=CERTGEN`.
-
-For an authoritative full list of arguments see the tool help; Arguments not listed here are
-defaulted in the `entrypoint.sh` script.
-
-* **CERTGEN_CA_ARN**
-    The AWS CA ARN to use to generate the cert
-* **CERTGEN_KEY_TYPE**
-    The type of private key (`RSA` or `DSA`)
-* **CERTGEN_KEY_LENGTH**
-    The key length in bits (`1024`, `2048` or `4096`)
-* **CERTGEN_KEY_DIGEST**
-    The key digest algorithm (`sha256`, `sha384`, `sha512`)
-* **CERTGEN_SUBJECT_C**
-    The subject country
-* **CERTGEN_SUBJECT_ST**
-    The subject state/province/county
-* **CERTGEN_SUBJECT_L**
-    The subject locality
-* **CERTGEN_SUBJECT_O**
-    The subject organisation
-* **CERTGEN_SUBJECT_OU**
-    The subject organisational unit
-* **CERTGEN_SUBJECT_EMAILADDRESS**
-    The subject email address
-* **CERTGEN_SIGNING_ALGORITHM**
-    The certificate signing algorithm used by ACM PCA
-    (`SHA256WITHECDSA`, `SHA384WITHECDSA`, `SHA512WITHECDSA`, `SHA256WITHRSA`, `SHA384WITHRSA`, `SHA512WITHRSA`)
-* **CERTGEN_VALIDITY_PERIOD**
-    The certificate validity period in Go style duration (e.g. `1y2m6d`)
-* **CERTGEN_PRIVATE_KEY_ALIAS**
-    Alias for the private key
-* **CERTGEN_TRUSTSTORE_CERTS**
-    Comma delimited list of S3 URIs pointing to certificates to be included in the trust store
-* **CERTGEN_TRUSTSTORE_ALIASES**
-    Comma delimited list of aliases for the certificate
-* **CERTGEN_LOG_LEVEL**
-    The log level of the certificate generator (`CRITICAL`, `ERROR`, `WARNING`, `INFO`, `DEBUG`)
-
-
-#### SSL Mutual Authentication (RETRIEVE mode)
-
-By default the SSL is enabled but has no defaults. These must either be
-configured in full or disabled entirely via `K2HB_KAFKA_INSECURE=FALSE`
-and `K2HB_KAFKA_CERT_MODE=RETRIEVE`.
-
-For an authoritative full list of arguments see the tool help; Arguments not listed here are
-defaulted in the `entrypoint.sh` script.
-
-* **RETRIEVER_ACM_CERT_ARN**
-    ARN in AWS ACM to use to fetch the required cert, cert chain, and key
-* **RETRIEVER_ADD_DOWNLOADED_CHAIN**
-    Whether or not to add the downloaded cert chain from the ARN to the trust store
-    Allowed missing, `true`, `false`, `yes`, `no`, `1` or `0`
-    If missing defaults to false
-* **RETRIEVE_TRUSTSTORE_CERTS**
-    Comma delimited list of S3 URIs pointing to certificates to be included in the trust store
-* **RETRIEVE_TRUSTSTORE_ALIASES**
-    Comma delimited list of aliases for the certificate
-* **RETRIEVE_LOG_LEVEL**
-    The log level of the certificate generator (`CRITICAL`, `ERROR`, `WARNING`, `INFO`, `DEBUG`)
+### Environment Variables
+|Name|Purpose|
+|----|---|                                                                                                                                                                                    
+| K2HB_AWS_S3_BATCH_PUTS | A toggle for whether to use batch puts for writing to s3, e.g. `true` |                                                                                                                                                                          
+| K2HB_AWS_S3_USE_LOCALSTACK | A toggle for whether to use localstack for local development, e.g. `true` |
+| K2HB_HBASE_ZOOKEEPER_PARENT | The node in zookeeper that identifies hbase e.g. `/hbase` |                                                                                                                                                                  
+| K2HB_HBASE_ZOOKEEPER_PORT | The port to use for connecting to zookeeper i.e. `2181` |                                                                                                                                                                    
+| K2HB_HBASE_ZOOKEEPER_QUORUM | The zookeeper host e.g. `hbase.dataworks.dwp.gov.uk` |                                                                                                                                                                        
+| K2HB_HBASE_OPERATION_TIMEOUT_MILLISECONDS | Top-level restriction for making sure a blocking operation in Table will not be blocked more than this |                                                                                                                                                                  
+| K2HB_HBASE_PAUSE_MILLISECONDS | The time in milliseconds for hbase to pause when writing to Hbase, e.g. `50` |                                                                                                                                                                    
+| K2HB_HBASE_RETRIES | The number of retries that will be attempted before failing to write to Hbase |                                                                                                                                                                  
+| K2HB_HBASE_RPC_TIMEOUT_MILLISECONDS | How long HBase client applications take for a remote call to time out. |                                                                                                                                                          
+| K2HB_KAFKA_DLQ_TOPIC | The topic to listen for on the kafka dlq, e.g. `test-dlq-topic` |                                                                                                                                                       
+| K2HB_RDS_USER | The user to use when connecting to the metadatastore e.g. `k2hbwriter` |                                                                                                                                                                      
+| K2HB_RDS_PASSWORD_SECRET_NAME | The name of the secret manager secret used to store the database users password  |                                                                                                                                                      
+| K2HB_RDS_DATABASE_NAME | The database that holds the reconciler table e.g. `metadatastore` |                                                                                                                                                   
+| K2HB_METADATA_STORE_TABLE | The reconciler database table we want to write to e.g. `ucfs` |                                                                                                                                                                        
+| K2HB_RDS_ENDPOINT | The reconciler database host or endpoint |                                                                                                                                                                  
+| K2HB_RDS_PORT | The port to connect to when establishing metadata store connection, e.g. `3306` |                                                                                                                                
+| K2HB_RDS_CA_CERT_PATH | The certification location that is needed for authenticating with the rds database, e.g. `/certs/AmazonRootCA1.pem` |                                                                                                                                                                    
+| K2HB_USE_AWS_SECRETS | Whether to look up the metadatastore password in aws secret manager |                                                                                                                                                           
+| K2HB_KAFKA_INSECURE | A toggle for whether the connection for kafka is insecure |                                                                                                                                                
+| K2HB_KAFKA_MAX_POLL_RECORDS | The number of unreconciled records to read at a time. |                                                                                                                                                      
+| K2HB_KAFKA_META_REFRESH_MS | The refresh in milliseconds for kafka metadata, e.g. `1000` |                                                                                                                                                        
+| K2HB_KAFKA_POLL_TIMEOUT | The timeout for how long it will wait when polling Kafka, e.g. `PT10S` |   
+| K2HB_HBASE_REGION_SPLITS | The number of regions to set when k2hb creates a missing table e.g. `2` | 
+| K2HB_WRITE_TO_METADATA_STORE | Whether the application should write to the metadata store |
+| K2HB_VALIDATOR_SCHEMA | A json file that encompasses the validator schema, e.g. `business_message.schema.json` |
+| K2HB_KAFKA_TOPIC_REGEX | Topics matching this are subscribed to unless they also match the exclusion regex, e.g. `(db[.]{1}[-\w]+[.]{1}[-.\w]+)` |
+| K2HB_KAFKA_TOPIC_EXCLUSION_REGEX | Topics matching this pattern are excluded from the subscription, e.g. `(db[.]{1}[-\w]+[.]{1}[-.\w]+)` |
+| K2HB_QUALIFIED_TABLE_PATTERN | The regex pattern for getting the table name from the topic, e.g. `\w+\.([-\w]+)\.([-.\w]+)` |
+| K2HB_AWS_S3_MANIFEST_DIRECTORY | The name of the directory for the AWS S3 manifest, e.g. `manifest_prefix` |            
+| K2HB_TRUSTSTORE_PATH | The SSL truststore location which is needed if Insecure Kafka is not true |         
+| K2HB_TRUSTSTORE_PASSWORD | The SSL truststore password which is needed if Insecure Kafka is not true |       
+| K2HB_KEYSTORE_PATH | The SSL keystore path which is needed if Insecure Kafka is not true |     
+| K2HB_KEYSTORE_PASSWORD | The SSL keystore password which is needed if Insecure Kafka is not true |     
+| K2HB_PRIVATE_KEY_PASSWORD | The SSL private key password which is needed if Insecure Kafka is not true |                                                                                                                                                                                            
